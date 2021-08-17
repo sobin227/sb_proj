@@ -2,12 +2,17 @@
 
 # 필요한 패키지 import
 import json
-
+import torchvision
 from torchvision import transforms
 from torchvision import datasets
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn as nn
+from vgg_model import VGG
 
-def image_folder_dataset(train_img_dir, eval_img_dir, batch_size=16):
+def image_folder_dataset(train_img_dir, eval_img_dir, test_img_dir, batch_size=16):
     """
     Make Train & Evaluation Image-Dataset from Image-Folder
     :param train_img_dir: Train Image data directory (str)
@@ -35,6 +40,8 @@ def image_folder_dataset(train_img_dir, eval_img_dir, batch_size=16):
                                          transform=preprocess)
     eval_dataset = datasets.ImageFolder(root=eval_img_dir,
                                         transform=preprocess)
+    test_dataset = datasets.ImageFolder(root=test_img_dir,
+                                        transform=preprocess)
 
     # train_dataset.classes 로 생성된 이미지 dataset 의 class 를 확인 가능
     # class 와 index 매칭을 위해 dict 형식으로 작성 및 json 파일로 저장
@@ -56,20 +63,54 @@ def image_folder_dataset(train_img_dir, eval_img_dir, batch_size=16):
                                   shuffle=True)             # 학습 데이터를 랜덤하게 호출
     eval_dataloader = DataLoader(dataset=eval_dataset,
                                  batch_size=batch_size,    # 임의의 batch_size
-                                 shuffle=False)            # 평가시엔 랜덤하게 데이터를 호출할 필요가 없으므로 False
+                                 shuffle=False)    # 평가시엔 랜덤하게 데이터를 호출할 필요가 없으므로 False
+    test_dataloader = DataLoader(dataset=test_dataset,
+                                 batch_size=batch_size,    # 임의의 batch_size
+                                 shuffle=False)
 
     image_dataset = {
         "train_dataloader": train_dataloader,
         "eval_dataloader": eval_dataloader,
+        "test_dataloader": test_dataloader,
         "class_index": class_index
     }
+
+    def imshow(img):
+        img = img / 2 + 0.5  # unnormalize
+        npimg = img.numpy()
+        plt.imshow(np.transpose(npimg, (1, 2, 0)))
+
+    # 학습용 이미지를 무작위로 가져오기
+    dataiter = iter(train_dataloader)
+    images, labels = dataiter.next()
+
+    # 이미지 보여주기
+    imshow(torchvision.utils.make_grid(images))
+    # 정답(label) 출력
+    print(' '.join('%5s' % labels[j] for j in range(4)))
+    plt.show()
+    model = VGG(nn.Module)
+    model.load_state_dict(torch.load('./output/epoch-10-acc-0.9023336829508052-loss-0.5882352941176471-model.pth'))
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for data in test_dataloader:
+            images, labels = data
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    print('Accuracy of the network on the 10000 test images: %d %%' % (
+            100 * correct / total))
+
     return image_dataset
 
 if __name__ == "__main__":
     train_img_dir = "datasets/train"
     eval_img_dir = "datasets/evaluation"
-
-    image_dataset = image_folder_dataset(train_img_dir, eval_img_dir)
+    test_img_dir = "datasets/test"
+    image_dataset = image_folder_dataset(train_img_dir, eval_img_dir, test_img_dir)
 
     # 생성된 dataset 확인
     for batch in image_dataset['train_dataloader']:
@@ -83,3 +124,61 @@ if __name__ == "__main__":
 
     print(f"class_index : {image_dataset['class_index']}")
     # >>> class_index : {'0': 'bird', '1': 'cat', '2': 'dog'}
+
+    class VGG(nn.Module):
+        def __init__(self, config, num_classes=10, init_weights=True):
+            super(VGG, self).__init__()
+            self.features = self._make_layers(config)    # VGG 모델의 구조 정보(cfg) 로부터, Feature 추출기 작성
+            self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
+            self.classifier = nn.Sequential(             # 이미지에서 추출된 특징(Feature)으로부터 class 를 추측하는 분류기 작성
+                nn.Linear(512 * 7 * 7, 1024),
+                nn.ReLU(inplace=True),
+                nn.Dropout(p=0.3),
+                nn.Linear(1024, num_classes),
+            )
+            if init_weights:                             # 가중치 초기화 로직
+                self._initialize_weights()
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x = self.features(x)
+            x = self.avgpool(x)
+            x = torch.flatten(x, 1)
+            x = self.classifier(x)
+            return x
+
+        def _make_layers(self, cfg):
+            layers = []
+            in_channels = 3
+            for v in cfg:
+                if v == 'M':
+                    layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+                else:
+                    conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+                    layers += [conv2d, nn.ReLU(inplace=True)]
+                    in_channels = v
+            return nn.Sequential(*layers)
+
+        def _initialize_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.BatchNorm2d):
+                    nn.init.constant_(m.weight, 1)
+                    nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, 0, 0.01)
+                    nn.init.constant_(m.bias, 0)
+
+    if __name__ == "__main__":
+        vgg11_cfg = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M']    # VGG 모델의 구조 정보
+        model = VGG(vgg11_cfg, num_classes=10, init_weights=True)    # model 빌드
+
+    #테스트 데이터 입력 후 출력 확인
+        test_input = torch.randn(1, 3, 224, 224)
+        out = model(test_input)
+        print(f"{out.shape} \n {out}")
+
+        print("Model is Ready")
+

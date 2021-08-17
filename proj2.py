@@ -115,6 +115,7 @@ def evaluate(model, criterion, eval_dataloader):
             'Evaluating - mean_loss: {:.3f}, mean_acc: {:.3f}'.format(
                 eval_result['mean_loss'], eval_result['mean_acc'])
         )
+    
     model.train()  # 평가 과정이 모두 종료 된 뒤, 다시 모델을 train 모드로 변경
 
     return eval_result
